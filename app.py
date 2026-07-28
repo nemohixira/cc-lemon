@@ -16,8 +16,8 @@ def get_global_rooms():
 
 global_rooms = get_global_rooms()
 
-# 一定時間アクセスのない「幽霊部屋」を自動削除するクリーンアップ関数
-def cleanup_old_rooms(timeout_seconds=300):  
+# 🌟 5分間放置された古い部屋を自動で大掃除する機能
+def cleanup_old_rooms(timeout_seconds=300):
     current_time = time.time()
     dead_rooms = []
     for r_name, r_state in global_rooms.items():
@@ -36,6 +36,7 @@ if "last_counted_turn" not in st.session_state: st.session_state.last_counted_tu
 if "my_room" not in st.session_state:
     st.subheader("🚪 ロビー")
     
+    # ロビーが開かれたタイミングで幽霊部屋を掃除
     cleanup_old_rooms()
     
     room_list = list(global_rooms.keys())
@@ -57,7 +58,7 @@ if "my_room" not in st.session_state:
                     'turn': 1,
                     'players': {'Player 1': True, 'Player 2': False},
                     'winner': None,
-                    'last_active': time.time()
+                    'last_active': time.time()  # タイムスタンプ
                 }
                 st.session_state.my_room = new_room_name
                 st.session_state.my_role = 'Player 1'
@@ -100,7 +101,7 @@ if room_name not in global_rooms:
     st.rerun()
 
 state = global_rooms[room_name]
-state['last_active'] = time.time()
+state['last_active'] = time.time()  # 生存アピール
 
 # 部屋データはあるが、相手が退室ボタンを押して消えた場合の処理（Player 1用）
 if role == 'Player 1' and not state['players']['Player 2'] and state['turn'] > 1:
@@ -127,13 +128,6 @@ if st.button("🚪 部屋を出る（ロビーへ戻る）"):
     st.rerun()
 
 st.divider()
-
-# 🌟【追加機能】Player 1専用：Player 2がまだ入室していない場合の待機画面
-if role == 'Player 1' and not state['players']['Player 2']:
-    st.subheader("⏳ 対戦相手（Player 2）を待っています...")
-    st.info("友達に部屋名を伝えるか、別のブラウザでこの部屋に参加してください。")
-    time.sleep(2)
-    st.rerun()
 
 # ⚔️ バトルフィールド
 st.subheader(f"⚔️ バトルフィールド (ターン {state['turn']})")
@@ -201,13 +195,12 @@ if state['choices'][role] is None:
                 cost_label = f" ({action_cost[act]})" if action_cost[act] > 0 else ""
                 if st.button(f"{act}{cost_label}", key=f"btn_{act}", use_container_width=True):
                     state['choices'][role] = act
-                    state['last_active'] = time.time()  # 行動時に更新
+                    state['last_active'] = time.time()
                     st.rerun()
 else:
     st.info(f"あなたは「{state['choices'][role]}」を選びました。")
     st.warning("⏳ 相手の入力を待っています...（自動で進みます）")
     
-    # 元々機能していたシンプルなウェイト処理
     time.sleep(1)
     st.rerun()
 
@@ -236,7 +229,7 @@ if state['choices']['Player 1'] and state['choices']['Player 2']:
         turn_log += f" ｜ 🔒 P2がP1「{action1}」を封印！"
         
     round_winner = None
-    if action1 == "行動不能" and action2 == "行動 cannot": round_winner = '引き分け' # 元コードの typo もそのまま維持
+    if action1 == "行動不能" and action2 == "行動 cannot": round_winner = '引き分け'
     elif action1 == "行動不能": round_winner = 'Player 2'
     elif action2 == "行動不能": round_winner = 'Player 1'
     elif action1 == '封印' and action2 == 'ミラー': pass 
@@ -272,3 +265,5 @@ st.subheader("🏆 通算戦績")
 col_w1, col_w2 = st.columns(2)
 with col_w1:
     st.metric(label="あなたの通算勝利数", value=f"{st.session_state.my_wins} 勝")
+with col_w2:
+    st.metric(label="相手の通算勝利数", value=f"{st.session_state.opp_wins} 勝")
