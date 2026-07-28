@@ -16,8 +16,8 @@ def get_global_rooms():
 
 global_rooms = get_global_rooms()
 
-# 🌟【追加】一定時間アクセスのない「幽霊部屋」を自動削除するクリーンアップ関数
-def cleanup_old_rooms(timeout_seconds=300):  # 5分間放置された部屋を消去
+# 一定時間アクセスのない「幽霊部屋」を自動削除するクリーンアップ関数
+def cleanup_old_rooms(timeout_seconds=300):  
     current_time = time.time()
     dead_rooms = []
     for r_name, r_state in global_rooms.items():
@@ -36,9 +36,7 @@ if "last_counted_turn" not in st.session_state: st.session_state.last_counted_tu
 if "my_room" not in st.session_state:
     st.subheader("🚪 ロビー")
     
-    # 🌟ロビーが開かれたタイミングで古い幽霊部屋を掃除する
     cleanup_old_rooms()
-    
     room_list = list(global_rooms.keys())
     
     col1, col2 = st.columns(2)
@@ -56,9 +54,9 @@ if "my_room" not in st.session_state:
                     'last_choices': {'Player 1': "まだ行動していません", 'Player 2': "まだ行動していません"},
                     'log': ["ゲームが開始されました。"],
                     'turn': 1,
-                    'players': {'Player 1': True, 'Player 2': False},
+                    'players': {'Player 1': True, 'Player 2': False}, # 初期状態ではPlayer 2はいない(False)
                     'winner': None,
-                    'last_active': time.time()  # 🌟タイムスタンプを追加
+                    'last_active': time.time()
                 }
                 st.session_state.my_room = new_room_name
                 st.session_state.my_role = 'Player 1'
@@ -69,7 +67,7 @@ if "my_room" not in st.session_state:
         st.write("### 部屋一覧から入る")
         if not room_list:
             st.info("現在、作られている部屋はありません。部屋ができるとここに自動で表示されます。")
-            time.sleep(2)  # 負荷軽減のため2秒に少し延長
+            time.sleep(2)
             st.rerun()
         else:
             selected_room = st.selectbox("部屋を選択:", room_list)
@@ -78,8 +76,8 @@ if "my_room" not in st.session_state:
                 if room['players']['Player 2']:
                     st.error("この部屋は満員です。")
                 else:
-                    room['players']['Player 2'] = True
-                    room['last_active'] = time.time()  # 🌟タイムスタンプを更新
+                    room['players']['Player 2'] = True # Player 2が入室
+                    room['last_active'] = time.time()
                     st.session_state.my_room = selected_room
                     st.session_state.my_role = 'Player 2'
                     st.session_state.last_counted_turn = 0
@@ -101,33 +99,51 @@ if room_name not in global_rooms:
     st.rerun()
 
 state = global_rooms[room_name]
-state['last_active'] = time.time()  # 🌟ゲーム画面が開かれている間、生存アピールとしてタイムスタンプを常に更新
-
-# 部屋データはあるが、相手が退室ボタンを押して消えた場合の処理（Player 1用）
-if role == 'Player 1' and not state['players']['Player 2'] and state['turn'] > 1:
-    st.warning("⚠️ 对戦相手が退室しました。部屋を解散してロビーに戻ります...")
-    if room_name in global_rooms: del global_rooms[room_name]
-    st.session_state.pop('my_room', None)
-    st.session_state.pop('my_role', None)
-    time.sleep(2)
-    st.rerun()
+state['last_active'] = time.time()
 
 # 🚪 部屋を途中退室するボタン
 st.success(f"部屋「{room_name}」に 【{role}】 として参加中")
 if st.button("🚪 部屋を出る（ロビーへ戻る）"):
     st.session_state.pop('my_room', None)
     st.session_state.pop('my_role', None)
-    
     if role == 'Player 1':
         if room_name in global_rooms: del global_rooms[room_name]
     else:
         state['players']['Player 2'] = False
         state['choices']['Player 2'] = None
         state['last_active'] = time.time()
-        
     st.rerun()
 
 st.divider()
+
+# 🌟【追加】Player 1専用：Player 2がまだ部屋に来ていない場合の待機画面
+if role == 'Player 1' and not state['players']['Player 2']:
+    st.subheader("⏳ 対戦相手（Player 2）を待っています...")
+    st.info("友達に部屋名を伝えるか、別のブラウザでこの部屋に参加してください。")
+    
+    # 相手が入室するまで1秒ごとにデータをチェックして自動リロードする関数
+    @st.fragment
+    def wait_for_player2():
+        while True:
+            if room_name not in global_rooms:
+                break
+            global_rooms[room_name]['last_active'] = time.time() # 部屋の消滅を防ぐ
+            if global_rooms[room_name]['players']['Player 2']: # 相手が入室したらループを抜ける
+                break
+            time.sleep(1)
+            st.rerun()
+            
+    wait_for_player2()
+    st.rerun() # 相手の入室を検知したら画面全体をリフレッシュしてバトル画面へ
+
+# 部屋データはあるが、対戦中に相手が退室ボタンを押して消えた場合の処理
+if role == 'Player 1' and not state['players']['Player 2'] and state['turn'] > 1:
+    st.warning("⚠️ 対戦相手が退室しました。部屋を解散してロビーに戻ります...")
+    if room_name in global_rooms: del global_rooms[room_name]
+    st.session_state.pop('my_room', None)
+    st.session_state.pop('my_role', None)
+    time.sleep(2)
+    st.rerun()
 
 # ⚔️ バトルフィールド
 st.subheader(f"⚔️ バトルフィールド (ターン {state['turn']})")
@@ -195,7 +211,7 @@ if state['choices'][role] is None:
                 cost_label = f" ({action_cost[act]})" if action_cost[act] > 0 else ""
                 if st.button(f"{act}{cost_label}", key=f"btn_{act}", use_container_width=True):
                     state['choices'][role] = act
-                    state['last_active'] = time.time()  # 行動時に更新
+                    state['last_active'] = time.time()
                     st.rerun()
 else:
     st.info(f"あなたは「{state['choices'][role]}」を選びました。")
@@ -206,7 +222,6 @@ else:
         while True:
             if room_name not in global_rooms:
                 break
-            # 待機中もタイムスタンプを更新して部屋が消されるのを防ぐ
             global_rooms[room_name]['last_active'] = time.time()
             if global_rooms[room_name]['choices'][opp_role]:
                 break
@@ -248,21 +263,3 @@ if state['choices']['Player 1'] and state['choices']['Player 2']:
     elif action2 == 'レーザー' and action1 != 'ミラー' and action1 != 'レーザー': round_winner = 'Player 2'
     elif action1 in ['攻撃', 'レーザー'] and action2 == 'ミラー': round_winner = 'Player 2'
     elif action2 in ['攻撃', 'レーザー'] and action1 == 'ミラー': round_winner = 'Player 1'
-    elif action1 == '攻撃' and action2 == '溜め': round_winner = 'Player 1'
-    elif action2 == '攻撃' and action1 == '溜め': round_winner = 'Player 2'
-    
-    if round_winner:
-        state['winner'] = round_winner
-        turn_log += f" 🏆 {round_winner} の勝利！"
-    
-    state['log'].insert(0, turn_log)
-    
-    state['choices']['Player 1'] = None
-    state['choices']['Player 2'] = None
-    if not state['winner']:
-        state['turn'] += 1
-    state['last_active'] = time.time()
-    st.rerun()
-
-# 📜 履歴の表示
-st.divider()
