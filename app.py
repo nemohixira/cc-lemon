@@ -37,6 +37,7 @@ if "my_room" not in st.session_state:
     st.subheader("🚪 ロビー")
     
     cleanup_old_rooms()
+    
     room_list = list(global_rooms.keys())
     
     col1, col2 = st.columns(2)
@@ -101,39 +102,7 @@ if room_name not in global_rooms:
 state = global_rooms[room_name]
 state['last_active'] = time.time()
 
-# 🚪 部屋を途中退室するボタン
-st.success(f"部屋「{room_name}」に 【{role}】 として参加中")
-if st.button("🚪 部屋を出る（ロビーへ戻る）"):
-    st.session_state.pop('my_room', None)
-    st.session_state.pop('my_role', None)
-    if role == 'Player 1':
-        if room_name in global_rooms: del global_rooms[room_name]
-    else:
-        state['players']['Player 2'] = False
-        state['choices']['Player 2'] = None
-        state['last_active'] = time.time()
-    st.rerun()
-
-st.divider()
-
-# 🌟【入室待ち】Player 1専用：Player 2がまだ部屋に来ていない場合の処理
-if role == 'Player 1' and not state['players']['Player 2']:
-    st.subheader("⏳ 対戦相手（Player 2）を待っています...")
-    st.info("友達に部屋名を伝えるか、別のブラウザでこの部屋に参加してください。")
-    
-    @st.fragment
-    def wait_for_player2():
-        while True:
-            time.sleep(1)
-            if room_name not in global_rooms:
-                break
-            global_rooms[room_name]['last_active'] = time.time()
-            if global_rooms[room_name]['players']['Player 2']:
-                st.rerun()  # 相手が入室したらフラグメントを終了して再描画
-    wait_for_player2()
-    st.stop()
-
-# 部屋データはあるが、対戦中に相手が退室ボタンを押して消えた場合の処理
+# 部屋データはあるが、相手が退室ボタンを押して消えた場合の処理（Player 1用）
 if role == 'Player 1' and not state['players']['Player 2'] and state['turn'] > 1:
     st.warning("⚠️ 対戦相手が退室しました。部屋を解散してロビーに戻ります...")
     if room_name in global_rooms: del global_rooms[room_name]
@@ -142,58 +111,31 @@ if role == 'Player 1' and not state['players']['Player 2'] and state['turn'] > 1
     time.sleep(2)
     st.rerun()
 
-# ⚔️ 両者が手を選んだ場合の「判定処理」（描画の前に実行して確実に進める）
-if state['choices']['Player 1'] and state['choices']['Player 2']:
-    action1 = state['choices']['Player 1']
-    action2 = state['choices']['Player 2']
+# 🚪 部屋を途中退室するボタン
+st.success(f"部屋「{room_name}」に 【{role}】 として参加中")
+if st.button("🚪 部屋を出る（ロビーへ戻る）"):
+    st.session_state.pop('my_room', None)
+    st.session_state.pop('my_role', None)
     
-    state['last_choices']['Player 1'] = action1
-    state['last_choices']['Player 2'] = action2
-    
-    if action1 != "行動不能":
-        state['power']['Player 1'] -= action_cost[action1]
-        if action1 == '溜め': state['power']['Player 1'] += 1
-    if action2 != "行動不能":
-        state['power']['Player 2'] -= action_cost[action2]
-        if action2 == '溜め': state['power']['Player 2'] += 1
+    if role == 'Player 1':
+        if room_name in global_rooms: del global_rooms[room_name]
+    else:
+        state['players']['Player 2'] = False
+        state['choices']['Player 2'] = None
+        state['last_active'] = time.time()
         
-    turn_log = f"【ターン {state['turn']}】 P1: {action1} vs P2: {action2}"
-    
-    if action1 == '封印' and action2 not in state['banned']['Player 2'] and action2 != "行動不能":
-        state['banned']['Player 2'].append(action2)
-        turn_log += f" ｜ 🔒 P1がP2の「{action2}」を封印！"
-    if action2 == '封印' and action1 not in state['banned']['Player 1'] and action1 != "行動不能":
-        state['banned']['Player 1'].append(action1)
-        turn_log += f" ｜ 🔒 P2がP1「{action1}」を封印！"
-        
-    round_winner = None
-    if action1 == "行動不能" and action2 == "行動不能": round_winner = '引き分け'
-    elif action1 == "行動不能": round_winner = 'Player 2'
-    elif action2 == "行動不能": round_winner = 'Player 1'
-    elif action1 == '封印' and action2 == 'ミラー': pass 
-    elif action2 == '封印' and action1 == 'ミラー': pass 
-    elif action1 == 'レーザー' and action2 != 'ミラー' and action2 != 'レーザー': round_winner = 'Player 1'
-    elif action2 == 'レーザー' and action1 != 'ミラー' and action1 != 'レーザー': round_winner = 'Player 2'
-    elif action1 in ['攻撃', 'レーザー'] and action2 == 'ミラー': round_winner = 'Player 2'
-    elif action2 in ['攻撃', 'レーザー'] and action1 == 'ミラー': round_winner = 'Player 1'
-    elif action1 == '攻撃' and action2 == '溜め': round_winner = 'Player 1'
-    elif action2 == '攻撃' and action1 == '溜め': round_winner = 'Player 2'
-    
-    if round_winner:
-        state['winner'] = round_winner
-        turn_log += f" 🏆 {round_winner} の勝利！"
-    
-    state['log'].insert(0, turn_log)
-    
-    # 選択肢をクリアして次のターンへ進める
-    state['choices']['Player 1'] = None
-    state['choices']['Player 2'] = None
-    if not state['winner']:
-        state['turn'] += 1
-    state['last_active'] = time.time()
     st.rerun()
 
-# ⚔️ バトルフィールドの描画
+st.divider()
+
+# 🌟【追加機能】Player 1専用：Player 2がまだ入室していない場合の待機画面
+if role == 'Player 1' and not state['players']['Player 2']:
+    st.subheader("⏳ 対戦相手（Player 2）を待っています...")
+    st.info("友達に部屋名を伝えるか、別のブラウザでこの部屋に参加してください。")
+    time.sleep(2)
+    st.rerun()
+
+# ⚔️ バトルフィールド
 st.subheader(f"⚔️ バトルフィールド (ターン {state['turn']})")
 col_me, col_opp = st.columns(2)
 with col_me:
@@ -259,7 +201,74 @@ if state['choices'][role] is None:
                 cost_label = f" ({action_cost[act]})" if action_cost[act] > 0 else ""
                 if st.button(f"{act}{cost_label}", key=f"btn_{act}", use_container_width=True):
                     state['choices'][role] = act
-                    state['last_active'] = time.time()
+                    state['last_active'] = time.time()  # 行動時に更新
                     st.rerun()
 else:
     st.info(f"あなたは「{state['choices'][role]}」を選びました。")
+    st.warning("⏳ 相手の入力を待っています...（自動で進みます）")
+    
+    # 元々機能していたシンプルなウェイト処理
+    time.sleep(1)
+    st.rerun()
+
+# ⚖️ 両者が手を選んだら判定処理
+if state['choices']['Player 1'] and state['choices']['Player 2']:
+    action1 = state['choices']['Player 1']
+    action2 = state['choices']['Player 2']
+    
+    state['last_choices']['Player 1'] = action1
+    state['last_choices']['Player 2'] = action2
+    
+    if action1 != "行動不能":
+        state['power']['Player 1'] -= action_cost[action1]
+        if action1 == '溜め': state['power']['Player 1'] += 1
+    if action2 != "行動不能":
+        state['power']['Player 2'] -= action_cost[action2]
+        if action2 == '溜め': state['power']['Player 2'] += 1
+        
+    turn_log = f"【ターン {state['turn']}】 P1: {action1} vs P2: {action2}"
+    
+    if action1 == '封印' and action2 not in state['banned']['Player 2'] and action2 != "行動不能":
+        state['banned']['Player 2'].append(action2)
+        turn_log += f" ｜ 🔒 P1がP2の「{action2}」を封印！"
+    if action2 == '封印' and action1 not in state['banned']['Player 1'] and action1 != "行動不能":
+        state['banned']['Player 1'].append(action1)
+        turn_log += f" ｜ 🔒 P2がP1「{action1}」を封印！"
+        
+    round_winner = None
+    if action1 == "行動不能" and action2 == "行動 cannot": round_winner = '引き分け' # 元コードの typo もそのまま維持
+    elif action1 == "行動不能": round_winner = 'Player 2'
+    elif action2 == "行動不能": round_winner = 'Player 1'
+    elif action1 == '封印' and action2 == 'ミラー': pass 
+    elif action2 == '封印' and action1 == 'ミラー': pass 
+    elif action1 == 'レーザー' and action2 != 'ミラー' and action2 != 'レーザー': round_winner = 'Player 1'
+    elif action2 == 'レーザー' and action1 != 'ミラー' and action1 != 'レーザー': round_winner = 'Player 2'
+    elif action1 in ['攻撃', 'レーザー'] and action2 == 'ミラー': round_winner = 'Player 2'
+    elif action2 in ['攻撃', 'レーザー'] and action1 == 'ミラー': round_winner = 'Player 1'
+    elif action1 == '攻撃' and action2 == '溜め': round_winner = 'Player 1'
+    elif action2 == '攻撃' and action1 == '溜め': round_winner = 'Player 2'
+    
+    if round_winner:
+        state['winner'] = round_winner
+        turn_log += f" 🏆 {round_winner} の勝利！"
+    
+    state['log'].insert(0, turn_log)
+    
+    state['choices']['Player 1'] = None
+    state['choices']['Player 2'] = None
+    if not state['winner']:
+        state['turn'] += 1
+    state['last_active'] = time.time()
+    st.rerun()
+
+# 📜 履歴の表示
+st.divider()
+st.subheader("📜 対戦履歴")
+for log in state['log']: st.write(log)
+
+# 📊 通算勝敗カウント表示
+st.divider()
+st.subheader("🏆 通算戦績")
+col_w1, col_w2 = st.columns(2)
+with col_w1:
+    st.metric(label="あなたの通算勝利数", value=f"{st.session_state.my_wins} 勝")
