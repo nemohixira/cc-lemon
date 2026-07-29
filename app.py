@@ -1,28 +1,8 @@
 import streamlit as st
 import time
-from streamlit_javascript import st_javascript
-import json
 
 # ページの初期設定
 st.set_page_config(page_title="CCレモンゲーム 決定版", layout="centered")
-
-# --- 永続化ストレージ (LocalStorage) の読み書き関数 ---
-def load_local_storage():
-    """ブラウザからユーザーデータを読み込む"""
-    js_code = "localStorage.getItem('cc_lemon_user_data') || 'null';"
-    res = st_javascript(js_code)
-    if res and res != "null":
-        try:
-            return json.loads(res)
-        except:
-            return None
-    return None
-
-def save_local_storage(data):
-    """ブラウザにユーザーデータを保存する"""
-    js_string = json.dumps(data, ensure_ascii=False).replace("'", "\\'")
-    js_code = f"localStorage.setItem('cc_lemon_user_data', '{js_string}');"
-    st_javascript(js_code)
 
 # --- グローバル共有データ（サーバーメモリ） ---
 @st.cache_resource
@@ -36,38 +16,47 @@ global_data = get_global_data()
 global_rooms = global_data['rooms']
 global_rankings = global_data['rankings']
 
-# --- セッション状態の初期化 ---
+# --- URLパラメータを利用したデータの擬似永続化 ---
+# URLに記録されたユーザー情報を復元する
 if "user_data" not in st.session_state:
-    st.session_state.user_data = None
-if "storage_loaded" not in st.session_state:
-    st.session_state.storage_loaded = False
+    params = st.query_params
+    if "p_name" in params:
+        st.session_state.user_data = {
+            "name": params["p_name"],
+            "wins": int(params.get("p_wins", 0)),
+            "losses": int(params.get("p_losses", 0)),
+            "matches": int(params.get("p_matches", 0)),
+            "history": [] # 簡易化のためURL保存時は履歴配列はリセット
+        }
+    else:
+        st.session_state.user_data = None
 
-# 最初に1回だけLocalStorageからデータを読み込む
-if not st.session_state.storage_loaded:
-    fetched = load_local_storage()
-    if fetched is not None:
-        st.session_state.user_data = fetched
-    st.session_state.storage_loaded = True
-    st.rerun()
+def sync_data_to_url(u_data):
+    """データをURLパラメータに書き込んでブラウザに記憶させる"""
+    st.query_params.update(
+        p_name=u_data["name"],
+        p_wins=u_data["wins"],
+        p_losses=u_data["losses"],
+        p_matches=u_data["matches"]
+    )
 
 # --- 1. ニックネーム登録・確認フェーズ ---
 if st.session_state.user_data is None:
     st.title("🍋 CCレモンゲーム オンライン")
-    st.subheader("👤 初回プロフィール登録")
+    st.subheader("👤 プロフィール登録")
     st.write("ゲームを始める前に、ニックネームを決めてください。")
     name_input = st.text_input("ニックネームを入力（後から変更可能）:", placeholder="例: レモン太郎")
     
     if st.button("登録してプレイ開始") and name_input.strip():
-        # 初期データを構築
         initial_data = {
             "name": name_input.strip(),
             "wins": 0,
             "losses": 0,
             "matches": 0,
-            "history": [] # 各要素は {"opp": 相手名, "result": "勝ち"か"負け"}
+            "history": []
         }
         st.session_state.user_data = initial_data
-        save_local_storage(initial_data)
+        sync_data_to_url(initial_data)
         st.rerun()
     st.stop()
 
@@ -120,10 +109,10 @@ if page == "🎮 ゲームプレイ":
                         'choices': {'Player 1': None, 'Player 2': None},
                         'last_choices': {'Player 1': "まだ行動していません", 'Player 2': "まだ行動していません"},
                         'log': ["ゲームが開始されました。"],
-                        'chat': [f"📢 システム: {my_name} が部屋を作成しました。"], # チャット初期化
+                        'chat': [f"📢 システム: {my_name} が部屋を作成しました。"],
                         'turn': 1,
                         'players': {'Player 1': True, 'Player 2': False},
-                        'names': {'Player 1': my_name, 'Player 2': None}, # プレイヤー名を記録
+                        'names': {'Player 1': my_name, 'Player 2': None},
                         'winner': None
                     }
                     st.session_state.my_room = new_room_name
@@ -146,7 +135,6 @@ if page == "🎮 ゲームプレイ":
                     else:
                         room['players']['Player 2'] = True
                         room['names']['Player 2'] = my_name
-                        # 入室メッセージをチャットに追加
                         room['chat'].append(f"📢 システム: {my_name} が入室しました。")
                         st.session_state.my_room = selected_room
                         st.session_state.my_role = 'Player 2'
@@ -155,7 +143,7 @@ if page == "🎮 ゲームプレイ":
                         
         st.stop() 
 
-    # --- ここからゲーム画面（部屋に入った人のみ進めるエリア） ---
+    # --- ここからゲーム画面 ---
     room_name = st.session_state.my_room
     role = st.session_state.my_role
     opp_role = 'Player 2' if role == 'Player 1' else 'Player 1'
@@ -172,7 +160,7 @@ if page == "🎮 ゲームプレイ":
     opp_display_name = state['names'][opp_role] if state['names'][opp_role] else "対戦相手"
 
     if role == 'Player 1' and not state['players']['Player 2'] and state['turn'] > 1:
-        st.warning("⚠️ 対戦相手が退室しました。部屋を解散してロビーに戻ります...")
+        st.warning("⚠️ 对戦相手が退室しました。部屋を解散してロビーに戻ります...")
         if room_name in global_rooms: del global_rooms[room_name]
         st.session_state.pop('my_room', None)
         st.session_state.pop('my_role', None)
@@ -215,15 +203,13 @@ if page == "🎮 ゲームプレイ":
 
     st.divider()
 
-    # 💬 リアルタイムチャットエリア（対戦画面内に配置）
+    # 💬 チャットエリア
     st.subheader("💬 部屋のチャット履歴")
-    # チャット表示エリア
     chat_box = st.container(height=180, border=True)
     with chat_box:
         for msg in reversed(state['chat']):
             st.write(msg)
             
-    # チャット送信フォーム
     with st.form(key="chat_form", clear_on_submit=True):
         chat_input = st.text_input("メッセージを入力:", placeholder="よろしくおねがいします！")
         submit_chat = st.form_submit_button("送信")
@@ -233,7 +219,7 @@ if page == "🎮 ゲームプレイ":
 
     st.divider()
 
-    # 🏆 決着がついたあとの画面
+    # 🏆 決着判定
     if state['winner']:
         if state['winner'] == '引き分け':
             st.header("🤝 両者行動不能により引き分け！")
@@ -243,9 +229,6 @@ if page == "🎮 ゲームプレイ":
         else:
             st.header("💀 敗北...")
             
-        st.write("次の行動を選んでください：")
-        
-        # LocalStorageおよびセッションの戦績カウント・履歴処理
         if state['turn'] != st.session_state.last_counted_turn:
             u_data["matches"] += 1
             if state['winner'] == role:
@@ -258,7 +241,7 @@ if page == "🎮 ゲームプレイ":
                 u_data["history"].insert(0, {"opp": opp_display_name, "result": "引き分け"})
                 
             st.session_state.user_data = u_data
-            save_local_storage(u_data) # ブラウザに保存
+            sync_data_to_url(u_data) # URLに状態保存
             st.session_state.last_counted_turn = state['turn']
             st.rerun()
             
@@ -270,3 +253,18 @@ if page == "🎮 ゲームプレイ":
             state['log'] = ["ゲームがリセットされました。"]
             state['turn'] = 1
             state['winner'] = None
+            st.rerun()
+        st.stop()
+
+    # ⚔️ アクションボタン選択フェーズ
+    if state['choices'][role] is None:
+        st.subheader("👇 次の手を選んでください（相手には見えません）")
+        available_actions = [a for a in actions if a not in state['banned'][role] and action_cost[a] <= state['power'][role]]
+        
+        if not available_actions:
+            state['choices'][role] = "行動不能"
+            st.rerun()
+        else:
+            cols = st.columns(len(available_actions))
+            for idx, act in enumerate(available_actions):
+                with cols[idx]:
