@@ -17,7 +17,6 @@ global_rooms = global_data['rooms']
 global_rankings = global_data['rankings']
 
 # --- URLパラメータを利用したデータの擬似永続化 ---
-# URLに記録されたユーザー情報を復元する
 if "user_data" not in st.session_state:
     params = st.query_params
     if "p_name" in params:
@@ -26,7 +25,7 @@ if "user_data" not in st.session_state:
             "wins": int(params.get("p_wins", 0)),
             "losses": int(params.get("p_losses", 0)),
             "matches": int(params.get("p_matches", 0)),
-            "history": [] # 簡易化のためURL保存時は履歴配列はリセット
+            "history": [] 
         }
     else:
         st.session_state.user_data = None
@@ -160,7 +159,7 @@ if page == "🎮 ゲームプレイ":
     opp_display_name = state['names'][opp_role] if state['names'][opp_role] else "対戦相手"
 
     if role == 'Player 1' and not state['players']['Player 2'] and state['turn'] > 1:
-        st.warning("⚠️ 对戦相手が退室しました。部屋を解散してロビーに戻ります...")
+        st.warning("⚠️ 対戦相手が退室しました。部屋を解散してロビーに戻ります...")
         if room_name in global_rooms: del global_rooms[room_name]
         st.session_state.pop('my_room', None)
         st.session_state.pop('my_role', None)
@@ -241,7 +240,7 @@ if page == "🎮 ゲームプレイ":
                 u_data["history"].insert(0, {"opp": opp_display_name, "result": "引き分け"})
                 
             st.session_state.user_data = u_data
-            sync_data_to_url(u_data) # URLに状態保存
+            sync_data_to_url(u_data)
             st.session_state.last_counted_turn = state['turn']
             st.rerun()
             
@@ -268,3 +267,4 @@ if page == "🎮 ゲームプレイ":
             cols = st.columns(len(available_actions))
             for idx, act in enumerate(available_actions):
                 with cols[idx]:
+                    cost_label = f" ({action_cost[act]})" if action_cost[act] > 0 else ""
