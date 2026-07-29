@@ -1,263 +1,265 @@
 import streamlit as st
 import time
+import uuid
+import datetime
 
-# ページの初期設定
-st.set_page_config(page_title="CCレモンゲーム 決定版", layout="centered")
-st.title("🍋 CCレモンゲーム オンライン対戦")
+# ページ基本設定
+st.set_page_config(page_title="CCレモンオンライン", layout="wide")
 
-# ゲームの基本データ定義
-actions = ['溜め', '攻撃', 'ミラー', '封印', 'レーザー', 'バリア']
-action_cost = {'溜め': 0, '攻撃': 1, 'ミラー': 2, '封印': 3, 'レーザー': 5, 'バリア': 0}
+# ==========================================
+# 1. グローバルデータの初期化 (全ユーザーで共有)
+# ==========================================
+if "global_rooms" not in st.cache_resource:
+    st.cache_resource.global_rooms = {}
 
-# 全ユーザーで「絶対に同じ部屋データ」を共有するための仕組み
-@st.cache_resource
-def get_global_rooms():
-    return {}
+if "global_leaderboard" not in st.cache_resource:
+    # 初期データとしてモック（偽データ）を2つ入れておきます（ランキングの確認用）
+    st.cache_resource.global_leaderboard = {
+        "mock_id_1": {"name": "タロウ", "wins": 8, "losses": 2, "total": 10, "history": []},
+        "mock_id_2": {"name": "ハナコ", "wins": 5, "losses": 5, "total": 10, "history": []},
+    }
 
-global_rooms = get_global_rooms()
+rooms = st.cache_resource.global_rooms
+leaderboard = st.cache_resource.global_leaderboard
 
-# 各ブラウザ（セッション）ごとに自分の勝利数を記録するためのカウンター
-if "my_wins" not in st.session_state: st.session_state.my_wins = 0
-if "opp_wins" not in st.session_state: st.session_state.opp_wins = 0
-if "last_counted_turn" not in st.session_state: st.session_state.last_counted_turn = 0
+# ==========================================
+# 2. 個人のセッション初期化 (アクセスしたブラウザごと)
+# ==========================================
+if "user_id" not in st.session_state:
+    st.session_state.user_id = str(uuid.uuid4())
+    st.session_state.my_room = None
+    st.session_state.chosen_action = None
+    st.session_state.game_logged = False  # 2重に戦績が記録されるのを防ぐフラグ
 
-# --- 部屋の選択・作成フェーズ（ロビー） ---
-if "my_room" not in st.session_state:
-    st.subheader("🚪 ロビー")
+uid = st.session_state.user_id
+
+# データベースにユーザーがいなければ初期登録
+if uid not in leaderboard:
+    leaderboard[uid] = {
+        "name": f"プレイヤー_{uid[:4]}",
+        "wins": 0,
+        "losses": 0,
+        "total": 0,
+        "history": []
+    }
+
+# ==========================================
+# 3. サイドバーナビゲーション (ページ切り替え)
+# ==========================================
+st.sidebar.title("メニュー")
+st.sidebar.write(f"ログイン中: **{leaderboard[uid]['name']}**")
+page = st.sidebar.radio("ページを選択", ["ゲームプレイ", "マイページ", "ランキング"])
+
+# ==========================================
+# 【ページA】マイページ
+# ==========================================
+if page == "マイページ":
+    st.title("👤 マイページ")
     
-    room_list = list(global_rooms.keys())
+    # ニックネームの確認と変更
+    current_name = leaderboard[uid]["name"]
+    st.subheader(f"現在のニックネーム: {current_name}")
     
-    col1, col2 = st.columns(2)
-    with col1:
-        st.write("### 部屋を作る")
-        new_room_name = st.text_input("部屋名を入力:", placeholder="例: ぼくの部屋")
-        if st.button("部屋を作成して入る") and new_room_name:
-            if new_room_name in global_rooms:
-                st.error("その部屋名はすでに使われています。")
-            else:
-                global_rooms[new_room_name] = {
-                    'power': {'Player 1': 0, 'Player 2': 0},
-                    'banned': {'Player 1': [], 'Player 2': []},
-                    'choices': {'Player 1': None, 'Player 2': None},
-                    'last_choices': {'Player 1': "まだ行動していません", 'Player 2': "まだ行動していません"},
-                    'log': ["ゲームが開始されました。"],
-                    'turn': 1,
-                    'players': {'Player 1': True, 'Player 2': False},
-                    'winner': None
-                }
-                st.session_state.my_room = new_room_name
-                st.session_state.my_role = 'Player 1'
-                st.session_state.last_counted_turn = 0
+    # 横並びで変更フォームを配置
+    col_input, col_btn = st.columns([3, 1])
+    with col_input:
+        new_name = st.text_input("新しいニックネーム（10文字以内）", value=current_name, max_chars=10, label_visibility="collapsed")
+    with col_btn:
+        if st.button("変更を確定", use_container_width=True):
+            if new_name.strip():
+                leaderboard[uid]["name"] = new_name.strip()
+                st.success("ニックネームを変更しました！")
                 st.rerun()
-                
-    with col2:
-        st.write("### 部屋一覧から入る")
-        if not room_list:
-            st.info("現在、作られている部屋はありません。部屋ができるとここに自動で表示されます。")
-            time.sleep(1)
-            st.rerun()
-        else:
-            selected_room = st.selectbox("部屋を選択:", room_list)
-            if st.button("この部屋に入る"):
-                room = global_rooms[selected_room]
-                if room['players']['Player 2']:
-                    st.error("この部屋は満員です。")
-                else:
-                    room['players']['Player 2'] = True
-                    st.session_state.my_room = selected_room
-                    st.session_state.my_role = 'Player 2'
-                    st.session_state.last_counted_turn = 0
-                    st.rerun()
-                    
-    # 🌟ロビー画面の時は、ここでプログラムを絶対にストップさせる（これ以降のバトル画面・履歴・戦績を100%非表示にする）
-    st.stop() 
 
-# --- ここからゲーム画面（部屋に入った人のみ進めるエリア） ---
-room_name = st.session_state.my_room
-role = st.session_state.my_role
-opp_role = 'Player 2' if role == 'Player 1' else 'Player 1'
-
-# もし作成者がすでに退出して部屋が消えた場合の強制送還（主にPlayer 2用）
-if room_name not in global_rooms:
-    st.warning("⚠️ 部屋が解散されました。ロビーに戻ります...")
-    st.session_state.pop('my_room', None)
-    st.session_state.pop('my_role', None)
-    time.sleep(2)
-    st.rerun()
-
-state = global_rooms[room_name]
-
-# 部屋データはあるが、相手が退室ボタンを押して消えた場合の処理（Player 1用）
-if role == 'Player 1' and not state['players']['Player 2'] and state['turn'] > 1:
-    st.warning("⚠️ 対戦相手が退室しました。部屋を解散してロビーに戻ります...")
-    if room_name in global_rooms: del global_rooms[room_name]
-    st.session_state.pop('my_room', None)
-    st.session_state.pop('my_role', None)
-    time.sleep(2)
-    st.rerun()
-
-# 🚪 部屋を途中退室するボタン
-st.success(f"部屋「{room_name}」に 【{role}】 として参加中")
-if st.button("🚪 部屋を出る（ロビーへ戻る）"):
-    st.session_state.pop('my_room', None)
-    st.session_state.pop('my_role', None)
-    
-    if role == 'Player 1':
-        if room_name in global_rooms: del global_rooms[room_name]
-    else:
-        state['players']['Player 2'] = False
-        state['choices']['Player 2'] = None
-        
-    st.rerun()
-
-st.divider()
-
-# ⚔️ バトルフィールド
-st.subheader(f"⚔️ バトルフィールド (ターン {state['turn']})")
-col_me, col_opp = st.columns(2)
-with col_me:
-    st.markdown(f"### 👤 あなた (パワー: {state['power'][role]})")
-    st.info(f"出した手: **{state['last_choices'][role]}**")
-    if state['banned'][role]: st.warning(f"🔒 封印中: {', '.join(state['banned'][role])}")
-with col_opp:
-    st.markdown("### 🤖 相手")
-    st.info(f"出した手: **{state['last_choices'][opp_role]}**")
-    if state['banned'][opp_role]: st.warning(f"🔒 封印中: {', '.join(state['banned'][opp_role])}")
-
-st.divider()
-
-# 🏆 決着がついたあとの画面
-if state['winner']:
-    if state['winner'] == '引き分け':
-        st.header("🤝 両者行動不能により引き分け！")
-    elif state['winner'] == role:
-        st.header("🎉 勝利！！！")
-        st.balloons()
-    else:
-        st.header("💀 敗北...")
-        
-    st.write("次の行動を選んでください：")
-    
-    # 通算戦績のカウント処理
-    if state['turn'] != st.session_state.last_counted_turn:
-        if state['winner'] == role:
-            st.session_state.my_wins += 1
-        elif state['winner'] == opp_role:
-            st.session_state.opp_wins += 1
-        st.session_state.last_counted_turn = state['turn']
-        
-    if st.button("🔄 もう一度遊ぶ（同じ部屋でリセット）"):
-        state['power'] = {'Player 1': 0, 'Player 2': 0}
-        state['banned'] = {'Player 1': [], 'Player 2': []}
-        state['choices'] = {'Player 1': None, 'Player 2': None}
-        state['last_choices'] = {'Player 1': "まだ行動していません", 'Player 2': "まだ行動していません"}
-        state['log'] = ["ゲームがリセットされました。"]
-        state['turn'] = 1
-        state['winner'] = None
-        st.rerun()
-    
     st.divider()
-    st.subheader("🏆 通算戦績")
-    col_w1, col_w2 = st.columns(2)
-    with col_w1: st.metric(label="あなたの通算勝利数", value=f"{st.session_state.my_wins} 勝")
-    with col_w2: st.metric(label="相手の通算勝利数", value=f"{st.session_state.opp_wins} 勝")
-    st.stop()
 
-# ⚔️ アクションボタン選択フェーズ
-if state['choices'][role] is None:
-    st.subheader("👇 次の手を選んでください（相手には見えません）")
-    available_actions = [a for a in actions if a not in state['banned'][role] and action_cost[a] <= state['power'][role]]
+    # 戦績表示
+    stats = leaderboard[uid]
+    win_rate = (stats["wins"] / stats["total"] * 100) if stats["total"] > 0 else 0.0
     
-    if not available_actions:
-        state['choices'][role] = "行動不能"
-        st.rerun()
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("対戦回数", f"{stats['total']} 回")
+    c2.metric("勝利数", f"{stats['wins']} 勝")
+    c3.metric("敗北数", f"{stats['losses']} 敗")
+    c4.metric("勝率", f"{win_rate:.1f} %")
+
+    st.divider()
+
+    # 新しい順に対戦履歴を表示
+    st.subheader("⚔️ 最新の対戦履歴")
+    if stats["history"]:
+        for h in reversed(stats["history"]):
+            res_icon = "🟢【勝利】" if h["result"] == "WIN" else "🔴【敗北】"
+            st.write(f"{res_icon} vs **{h['opponent']}** ({h['time']})")
     else:
-        cols = st.columns(len(available_actions))
-        for idx, act in enumerate(available_actions):
-            with cols[idx]:
-                cost_label = f" ({action_cost[act]})" if action_cost[act] > 0 else ""
-                if st.button(f"{act}{cost_label}", key=f"btn_{act}", use_container_width=True):
-                    state['choices'][role] = act
+        st.info("対戦履歴はまだありません。試合を行うとここに記録されます。")
+
+# ==========================================
+# 【ページB】ランキング
+# ==========================================
+elif page == "ランキング":
+    st.title("🏆 勝率ランキング")
+    st.write("対戦回数が1回以上のプレイヤーを、勝率が高い順に表示しています。")
+    
+    ranking_list = []
+    for u_id, data in leaderboard.items():
+        w = data["wins"]
+        t = data["total"]
+        wr = (w / t * 100) if t > 0 else 0.0
+        # 1回以上対戦している人のみランキングに乗せる（初期モックは表示用として含む）
+        if t > 0 or u_id.startswith("mock_"):
+            ranking_list.append({
+                "name": data["name"],
+                "win_rate": wr,
+                "total": t,
+                "wins": w
+            })
+    
+    # 勝率 -> 対戦回数 の順で降順ソート
+    ranking_list = sorted(ranking_list, key=lambda x: (x["win_rate"], x["total"]), reverse=True)
+    
+    if ranking_list:
+        for i, rank in enumerate(ranking_list, 1):
+            # 上位3名にはメダルをつける
+            medal = "🥇 " if i == 1 else "🥈 " if i == 2 else "🥉 " if i == 3 else f"第 {i} 位: "
+            st.subheader(f"{medal} **{rank['name']}**")
+            st.write(f"勝率: **{rank['win_rate']:.1f}%** | 勝利数: {rank['wins']}勝 | 総対戦数: {rank['total']}回")
+            st.write("---")
+    else:
+        st.info("まだ対戦データがありません。")
+
+# ==========================================
+# 【ページC】ゲームプレイ（メインロジック）
+# ==========================================
+elif page == "ゲームプレイ":
+    st.title("🎮 CCレモンゲーム オンライン")
+    
+    # 部屋に入っていない場合
+    if st.session_state.my_room is None:
+        st.subheader("部屋の作成 または 入室")
+        room_id_input = st.text_input("部屋ID（半角英数字など自由な文字列）を入力してください:")
+        
+        if st.button("入室する / 部屋を作る"):
+            if room_id_input.strip():
+                rid = room_id_input.strip()
+                st.session_state.my_room = rid
+                st.session_state.game_logged = False
+                
+                # 部屋が存在しない場合は新規作成（自分がP1）
+                if rid not in rooms:
+                    rooms[rid] = {
+                        "p1_id": uid, "p1_name": leaderboard[uid]["name"], "p1_action": None, "p1_charge": 0,
+                        "p2_id": None, "p2_name": None, "p2_action": None, "p2_charge": 0,
+                        "chat": [f"📢 プレイヤー {leaderboard[uid]['name']} が部屋を作成しました。"],
+                        "turn": 1, "winner": None
+                    }
+                # 部屋が存在し、P2が空いているなら参加（自分がP2）
+                elif rooms[rid]["p1_id"] != uid and rooms[rid]["p2_id"] is None:
+                    rooms[rid]["p2_id"] = uid
+                    rooms[rid]["p2_name"] = leaderboard[uid]["name"]
+                    rooms[rid]["chat"].append(f"📢 プレイヤー {leaderboard[uid]['name']} が入室しました。対戦を始められます！")
+                
+                st.rerun()
+    
+    # 部屋に入っている場合
+    else:
+        rid = st.session_state.my_room
+        
+        # 部屋データが消えていた場合のセーフティ
+        if rid not in rooms:
+            st.error("部屋のデータが見つかりません。")
+            if st.button("ロビーに戻る"):
+                st.session_state.my_room = None
+                st.rerun()
+            st.stop()
+            
+        room = rooms[rid]
+        
+        # 自分がP1かP2かを判定
+        is_p1 = (room["p1_id"] == uid)
+        my_role = "p1" if is_p1 else "p2"
+        opp_role = "p2" if is_p1 else "p1"
+        
+        # 画面を2分割（左：ゲーム画面、右：チャット欄）
+        col_game, col_chat = st.columns([2, 1])
+        
+        # --- 左側：ゲームメイン画面 ---
+        with col_game:
+            st.subheader(f"部屋ID: {rid} (ターン {room['turn']})")
+            
+            # 相手の入室待ち画面
+            if room["p2_id"] is None:
+                st.warning("⏳ 対戦相手の入室を待っています...")
+                st.write("友達にこの部屋IDを教えて参加してもらってください。")
+                if st.button("部屋を解散して戻る"):
+                    del rooms[rid]
+                    st.session_state.my_room = None
                     st.rerun()
-else:
-    st.info(f"あなたは「{state['choices'][role]}」を選びました。")
-    st.warning("⏳ 相手の入力を待っています...（自動で進みます）")
-    
-    # 相手が入力を完了するまで裏で見に行く自動センサー
-    @st.fragment
-    def wait_for_opponent():
-        while True:
-            if room_name not in global_rooms:
-                break
-            if global_rooms[room_name]['choices'][opp_role]:
-                break
-            time.sleep(1)
-            st.rerun()
-    wait_for_opponent()
-
-# ⚖️ 両者が手を選んだら判定処理
-if state['choices']['Player 1'] and state['choices']['Player 2']:
-    action1 = state['choices']['Player 1']
-    action2 = state['choices']['Player 2']
-    
-    state['last_choices']['Player 1'] = action1
-    state['last_choices']['Player 2'] = action2
-    
-    # パワー計算
-    if action1 != "行動不能":
-        state['power']['Player 1'] -= action_cost[action1]
-        if action1 == '溜め': state['power']['Player 1'] += 1
-    if action2 != "行動不能":
-        state['power']['Player 2'] -= action_cost[action2]
-        if action2 == '溜め': state['power']['Player 2'] += 1
-        
-    turn_log = f"【ターン {state['turn']}】 P1: {action1} vs P2: {action2}"
-    
-    # 🔒 封印処理
-    if action1 == '封印' and action2 not in state['banned']['Player 2'] and action2 != "行動不能":
-        state['banned']['Player 2'].append(action2)
-        turn_log += f" ｜ 🔒 P1がP2の「{action2}」を封印！"
-    if action2 == '封印' and action1 not in state['banned']['Player 1'] and action1 != "行動不能":
-        state['banned']['Player 1'].append(action1)
-        turn_log += f" ｜ 🔒 P2がP1「{action1}」を封印！"
-        
-    # 勝敗判定
-    round_winner = None
-    if action1 == "行動不能" and action2 == "行動不能": round_winner = '引き分け'
-    elif action1 == "行動不能": round_winner = 'Player 2'
-    elif action2 == "行動不能": round_winner = 'Player 1' # ※元のコードのタイポ(cannot)を修正しました
-    elif action1 == '封印' and action2 == 'ミラー': pass 
-    elif action2 == '封印' and action1 == 'ミラー': pass 
-    elif action1 == 'レーザー' and action2 != 'ミラー' and action2 != 'レーザー': round_winner = 'Player 1'
-    elif action2 == 'レーザー' and action1 != 'ミラー' and action1 != 'レーザー': round_winner = 'Player 2'
-    elif action1 in ['攻撃', 'レーザー'] and action2 == 'ミラー': round_winner = 'Player 2'
-    elif action2 in ['攻撃', 'レーザー'] and action1 == 'ミラー': round_winner = 'Player 1'
-    elif action1 == '攻撃' and action2 == '溜め': round_winner = 'Player 1'
-    elif action2 == '攻撃' and action1 == '溜め': round_winner = 'Player 2'
-    
-    if round_winner:
-        state['winner'] = round_winner
-        turn_log += f" 🏆 {round_winner} の勝利！"
-    
-    state['log'].insert(0, turn_log)
-    
-    # 次のターンのためのリセット
-    state['choices']['Player 1'] = None
-    state['choices']['Player 2'] = None
-    if not state['winner']:
-        state['turn'] += 1
-    st.rerun()
-
-# 📜 履歴の表示
-st.divider()
-st.subheader("📜 对戦履歴")
-for log in state['log']: st.write(log)
-
-# 📊 通算勝敗カウント表示
-st.divider()
-st.subheader("🏆 通算戦績")
-col_w1, col_w2 = st.columns(2)
-with col_w1:
-    st.metric(label="あなたの通算勝利数", value=f"{st.session_state.my_wins} 勝")
-with col_w2:
-    st.metric(label="相手の通算勝利数", value=f"{st.session_state.opp_wins} 勝")
+                
+                time.sleep(2)
+                st.rerun()
+            
+            # 対戦相手情報
+            opp_name = room[f"{opp_role}_name"]
+            my_charge = room[f"{my_role}_charge"]
+            opp_charge = room[f"{opp_role}_charge"]
+            
+            st.write(f"🤝 対戦相手: **{opp_name}**")
+            
+            # ステータス表示
+            c_me, c_opp = st.columns(2)
+            c_me.metric("あなたのチャージ数", f"{my_charge} 個")
+            c_opp.metric(f"{opp_name} のチャージ数", f"{opp_charge} 個")
+            
+            st.divider()
+            
+            # 勝敗が決まっていない場合、行動選択
+            if room["winner"] is None:
+                # 自分がすでに行動を選択しているかチェック
+                if room[f"{my_role}_action"] is None:
+                    st.write("### 🫵 あなたの手を選んでください:")
+                    
+                    # チャージがないと攻撃系は選べないルール例
+                    btn_charge = st.button("🍋 CCレモン (タメ)")
+                    btn_guard = st.button("🛡️ ガード")
+                    btn_attack = st.button("⚡ コウゲキ (1チャージ消費)", disabled=(my_charge < 1))
+                    btn_laser = st.button("☄️ レーザー (2チャージ消費)", disabled=(my_charge < 2))
+                    
+                    if btn_charge: room[f"{my_role}_action"] = "タメ"; st.rerun()
+                    if btn_guard: room[f"{my_role}_action"] = "ガード"; st.rerun()
+                    if btn_attack: room[f"{my_role}_action"] = "コウゲキ"; st.rerun()
+                    if btn_laser: room[f"{my_role}_action"] = "レーザー"; st.rerun()
+                else:
+                    st.info(f"⏳ あなたは「{room[f'{my_role}_action']}」を選択しました。相手の入力を待っています...")
+                    
+                    # 両者が選択し終えたか確認
+                    if room[f"{opp_role}_action"] is not None:
+                        # --- 勝敗・ターン処理ロジック ---
+                        p1_act = room["p1_action"]
+                        p2_act = room["p2_action"]
+                        
+                        # チャージの増減を仮適用
+                        if p1_act == "タメ": room["p1_charge"] += 1
+                        if p1_act == "コウゲキ": room["p1_charge"] -= 1
+                        if p1_act == "レーザー": room["p1_charge"] -= 2
+                        
+                        if p2_act == "タメ": room["p2_charge"] += 1
+                        if p2_act == "コウゲキ": room["p2_charge"] -= 1
+                        if p2_act == "レーザー": room["p2_charge"] -= 2
+                        
+                        # システムログに手の結果を書き込み
+                        room["chat"].append(f"🎬 ターン {room['turn']}: {room['p1_name']}={p1_act} vs {room['p2_name']}={p2_act}")
+                        
+                        # 判定
+                        p1_lose = False
+                        p2_lose = False
+                        
+                        # レーザーはガード不能、レーザー同士は相殺、コウゲキには勝つ
+                        if p1_act == "レーザー" and p2_act != "レーザー": p2_lose = True
+                        if p2_act == "レーザー" and p1_act != "レーザー": p1_lose = True
+                        
+                        # 通常攻撃の判定
+                        if p1_act == "コウゲキ" and p2_act == "タメ": p2_lose = True
+                        if p2_act == "コウゲキ" and p1_act == "タメ": p1_lose = True
+                        
+                        # 結果の適用
