@@ -1,122 +1,272 @@
 import streamlit as st
 import time
+from streamlit_javascript import st_javascript
+import json
 
 # ページの初期設定
 st.set_page_config(page_title="CCレモンゲーム 決定版", layout="centered")
-st.title("🍋 CCレモンゲーム オンライン対戦")
 
-# --- 共通データ・設定 ---
+# --- 永続化ストレージ (LocalStorage) の読み書き関数 ---
+def load_local_storage():
+    """ブラウザからユーザーデータを読み込む"""
+    js_code = "localStorage.getItem('cc_lemon_user_data') || 'null';"
+    res = st_javascript(js_code)
+    if res and res != "null":
+        try:
+            return json.loads(res)
+        except:
+            return None
+    return None
+
+def save_local_storage(data):
+    """ブラウザにユーザーデータを保存する"""
+    js_string = json.dumps(data, ensure_ascii=False).replace("'", "\\'")
+    js_code = f"localStorage.setItem('cc_lemon_user_data', '{js_string}');"
+    st_javascript(js_code)
+
+# --- グローバル共有データ（サーバーメモリ） ---
+@st.cache_resource
+def get_global_data():
+    return {
+        'rooms': {},       # 各部屋のデータ
+        'rankings': {}     # 全ユーザーのランキング用集計データ
+    }
+
+global_data = get_global_data()
+global_rooms = global_data['rooms']
+global_rankings = global_data['rankings']
+
+# --- セッション状態の初期化 ---
+if "user_data" not in st.session_state:
+    st.session_state.user_data = None
+if "storage_loaded" not in st.session_state:
+    st.session_state.storage_loaded = False
+
+# 最初に1回だけLocalStorageからデータを読み込む
+if not st.session_state.storage_loaded:
+    fetched = load_local_storage()
+    if fetched is not None:
+        st.session_state.user_data = fetched
+    st.session_state.storage_loaded = True
+    st.rerun()
+
+# --- 1. ニックネーム登録・確認フェーズ ---
+if st.session_state.user_data is None:
+    st.title("🍋 CCレモンゲーム オンライン")
+    st.subheader("👤 初回プロフィール登録")
+    st.write("ゲームを始める前に、ニックネームを決めてください。")
+    name_input = st.text_input("ニックネームを入力（後から変更可能）:", placeholder="例: レモン太郎")
+    
+    if st.button("登録してプレイ開始") and name_input.strip():
+        # 初期データを構築
+        initial_data = {
+            "name": name_input.strip(),
+            "wins": 0,
+            "losses": 0,
+            "matches": 0,
+            "history": [] # 各要素は {"opp": 相手名, "result": "勝ち"か"負け"}
+        }
+        st.session_state.user_data = initial_data
+        save_local_storage(initial_data)
+        st.rerun()
+    st.stop()
+
+# 最新の自分のデータを同期
+u_data = st.session_state.user_data
+my_name = u_data["name"]
+
+# グローバル側のランキング用データを常に最新に更新
+global_rankings[my_name] = {
+    "name": my_name,
+    "wins": u_data["wins"],
+    "losses": u_data["losses"],
+    "matches": u_data["matches"],
+    "win_rate": round((u_data["wins"] / u_data["matches"] * 100), 1) if u_data["matches"] > 0 else 0.0
+}
+
+# --- 2. ページ切り替え（ナビゲーション） ---
+st.sidebar.title("メニュー")
+page = st.sidebar.radio("移動先を選択", ["🎮 ゲームプレイ", "👤 マイページ", "🏆 ランキング"])
+
+# 各ゲームの基本データ定義
 actions = ['溜め', '攻撃', 'ミラー', '封印', 'レーザー', 'バリア']
 action_cost = {'溜め': 0, '攻撃': 1, 'ミラー': 2, '封印': 3, 'レーザー': 5, 'バリア': 0}
 
-@st.cache_resource
-def get_global_rooms(): return {}
-global_rooms = get_global_rooms()
-
-# セッション状態の初期化
-if "my_wins" not in st.session_state: st.session_state.my_wins = 0
-if "opp_wins" not in st.session_state: st.session_state.opp_wins = 0
 if "last_counted_turn" not in st.session_state: st.session_state.last_counted_turn = 0
 
-# --- ロビー ---
-if "my_room" not in st.session_state:
-    st.subheader("🚪 ロビー")
-    col1, col2 = st.columns(2)
-    with col1:
-        new_room = st.text_input("部屋名")
-        if st.button("部屋作成") and new_room:
-            if new_room in global_rooms: st.error("存在します")
-            else:
-                global_rooms[new_room] = {
-                    'power': {'P1': 0, 'P2': 0}, 'banned': {'P1': [], 'P2': []},
-                    'choices': {'P1': None, 'P2': None}, 'last_choices': {'P1': "待機", 'P2': "待機"},
-                    'log': ["開始"], 'turn': 1, 'players': {'P1': True, 'P2': False},
-                    'winner': None, 'processing_turn': 0
-                }
-                st.session_state.update(my_room=new_room, my_role='P1')
-                st.rerun()
-    with col2:
+# ==========================================
+# 🎮 ゲームプレイ ページ
+# ==========================================
+if page == "🎮 ゲームプレイ":
+    st.title("🍋 CCレモンゲーム オンライン対戦")
+
+    # --- 部屋の選択・作成フェーズ（ロビー） ---
+    if "my_room" not in st.session_state:
+        st.subheader("🚪 ロビー")
+        
         room_list = list(global_rooms.keys())
-        selected = st.selectbox("部屋選択", room_list)
-        if st.button("入室") and selected and not global_rooms[selected]['players']['P2']:
-            global_rooms[selected]['players']['P2'] = True
-            st.session_state.update(my_room=selected, my_role='P2')
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write("### 部屋を作る")
+            new_room_name = st.text_input("部屋名を入力:", placeholder="例: ぼくの部屋")
+            if st.button("部屋を作成して入る") and new_room_name:
+                if new_room_name in global_rooms:
+                    st.error("その部屋名はすでに使われています。")
+                else:
+                    global_rooms[new_room_name] = {
+                        'power': {'Player 1': 0, 'Player 2': 0},
+                        'banned': {'Player 1': [], 'Player 2': []},
+                        'choices': {'Player 1': None, 'Player 2': None},
+                        'last_choices': {'Player 1': "まだ行動していません", 'Player 2': "まだ行動していません"},
+                        'log': ["ゲームが開始されました。"],
+                        'chat': [f"📢 システム: {my_name} が部屋を作成しました。"], # チャット初期化
+                        'turn': 1,
+                        'players': {'Player 1': True, 'Player 2': False},
+                        'names': {'Player 1': my_name, 'Player 2': None}, # プレイヤー名を記録
+                        'winner': None
+                    }
+                    st.session_state.my_room = new_room_name
+                    st.session_state.my_role = 'Player 1'
+                    st.session_state.last_counted_turn = 0
+                    st.rerun()
+                    
+        with col2:
+            st.write("### 部屋一覧から入る")
+            if not room_list:
+                st.info("現在、作られている部屋はありません。部屋ができるとここに自動で表示されます。")
+                time.sleep(1)
+                st.rerun()
+            else:
+                selected_room = st.selectbox("部屋を選択:", room_list)
+                if st.button("この部屋に入る"):
+                    room = global_rooms[selected_room]
+                    if room['players']['Player 2']:
+                        st.error("この部屋は満員です。")
+                    else:
+                        room['players']['Player 2'] = True
+                        room['names']['Player 2'] = my_name
+                        # 入室メッセージをチャットに追加
+                        room['chat'].append(f"📢 システム: {my_name} が入室しました。")
+                        st.session_state.my_room = selected_room
+                        st.session_state.my_role = 'Player 2'
+                        st.session_state.last_counted_turn = 0
+                        st.rerun()
+                        
+        st.stop() 
+
+    # --- ここからゲーム画面（部屋に入った人のみ進めるエリア） ---
+    room_name = st.session_state.my_room
+    role = st.session_state.my_role
+    opp_role = 'Player 2' if role == 'Player 1' else 'Player 1'
+
+    if room_name not in global_rooms:
+        st.warning("⚠️ 部屋が解散されました。ロビーに戻ります...")
+        st.session_state.pop('my_room', None)
+        st.session_state.pop('my_role', None)
+        time.sleep(2)
+        st.rerun()
+
+    state = global_rooms[room_name]
+    my_display_name = state['names'][role]
+    opp_display_name = state['names'][opp_role] if state['names'][opp_role] else "対戦相手"
+
+    if role == 'Player 1' and not state['players']['Player 2'] and state['turn'] > 1:
+        st.warning("⚠️ 対戦相手が退室しました。部屋を解散してロビーに戻ります...")
+        if room_name in global_rooms: del global_rooms[room_name]
+        st.session_state.pop('my_room', None)
+        st.session_state.pop('my_role', None)
+        time.sleep(2)
+        st.rerun()
+
+    st.success(f"部屋「{room_name}」に 【{role}: {my_display_name}】 として参加中")
+    if st.button("🚪 部屋を出る（ロビーへ戻る）"):
+        st.session_state.pop('my_room', None)
+        st.session_state.pop('my_role', None)
+        
+        if role == 'Player 1':
+            if room_name in global_rooms: del global_rooms[room_name]
+        else:
+            state['players']['Player 2'] = False
+            state['names']['Player 2'] = None
+            state['choices']['Player 2'] = None
+            state['chat'].append(f"📢 システム: {my_display_name} が退室しました。")
+            
+        st.rerun()
+
+    st.divider()
+
+    # ⚔️ バトルフィールド
+    st.subheader(f"⚔️ バトルフィールド (ターン {state['turn']})")
+    col_me, col_opp = st.columns(2)
+    with col_me:
+        st.markdown(f"### 👤 あなた ({my_display_name})")
+        st.write(f"**パワー**: {state['power'][role]}")
+        st.info(f"出した手: **{state['last_choices'][role]}**")
+        if state['banned'][role]: st.warning(f"🔒 封印中: {', '.join(state['banned'][role])}")
+    with col_opp:
+        st.markdown(f"### 🤖 相手 ({opp_display_name})")
+        if state['names'][opp_role]:
+            st.write(f"**パワー**: {state['power'][opp_role]}")
+        else:
+            st.write("**状態**: 待機中...")
+        st.info(f"出した手: **{state['last_choices'][opp_role]}**")
+        if state['banned'][opp_role]: st.warning(f"🔒 封印中: {', '.join(state['banned'][opp_role])}")
+
+    st.divider()
+
+    # 💬 リアルタイムチャットエリア（対戦画面内に配置）
+    st.subheader("💬 部屋のチャット履歴")
+    # チャット表示エリア
+    chat_box = st.container(height=180, border=True)
+    with chat_box:
+        for msg in reversed(state['chat']):
+            st.write(msg)
+            
+    # チャット送信フォーム
+    with st.form(key="chat_form", clear_on_submit=True):
+        chat_input = st.text_input("メッセージを入力:", placeholder="よろしくおねがいします！")
+        submit_chat = st.form_submit_button("送信")
+        if submit_chat and chat_input.strip():
+            state['chat'].append(f"💬 {my_display_name}: {chat_input.strip()}")
             st.rerun()
-    st.stop()
 
-# --- ゲーム画面 ---
-room_name = st.session_state.my_room
-role = st.session_state.my_role
-opp_role = 'P2' if role == 'P1' else 'P1'
-state = global_rooms.get(room_name)
+    st.divider()
 
-if not state:
-    st.warning("部屋が解散されました")
-    st.session_state.clear(); st.rerun()
-
-st.success(f"【{role}】として参加中")
-if st.button("🚪 退室"):
-    if role == 'P1': del global_rooms[room_name]
-    else: state['players']['P2'] = False
-    st.session_state.clear(); st.rerun()
-
-# ⚔️ バトルフィールド
-st.subheader(f"ターン {state['turn']}")
-col1, col2 = st.columns(2)
-with col1: st.info(f"自分 ({state['power'][role]}): {state['last_choices'][role]} (封印: {', '.join(state['banned'][role])})")
-with col2: st.info(f"相手: {state['last_choices'][opp_role]} (封印: {', '.join(state['banned'][opp_role])})")
-
-# 🏆 決着判定
-if state['winner']:
-    st.header("🏆 結果: " + state['winner'])
-    if state['turn'] != st.session_state.last_counted_turn:
-        if state['winner'] == role: st.session_state.my_wins += 1
-        elif state['winner'] == opp_role: st.session_state.opp_wins += 1
-        st.session_state.last_counted_turn = state['turn']
-    if st.button("🔄 リセット"):
-        state.update({'power': {'P1': 0, 'P2': 0}, 'banned': {'P1': [], 'P2': []}, 'choices': {'P1': None, 'P2': None}, 'last_choices': {'P1': "待機", 'P2': "待機"}, 'log': ["リセット"], 'turn': 1, 'winner': None, 'processing_turn': 0})
-        st.rerun()
-    st.stop()
-
-# ⚖️ ターン判定（レースコンディション対策）
-if state['choices']['P1'] and state['choices']['P2']:
-    if state['processing_turn'] < state['turn']:
-        state['processing_turn'] = state['turn']
-        c1, c2 = state['choices']['P1'], state['choices']['P2']
-        state['last_choices'].update({'P1': c1, 'P2': c2})
+    # 🏆 決着がついたあとの画面
+    if state['winner']:
+        if state['winner'] == '引き分け':
+            st.header("🤝 両者行動不能により引き分け！")
+        elif state['winner'] == role:
+            st.header("🎉 勝利！！！")
+            st.balloons()
+        else:
+            st.header("💀 敗北...")
+            
+        st.write("次の行動を選んでください：")
         
-        # パワー・封印計算
-        for r, act in [('P1', c1), ('P2', c2)]:
-            if act != "行動不能":
-                state['power'][r] -= action_cost[act]
-                if act == '溜め': state['power'][r] += 1
-        
-        if c1 == '封印' and c2 != "行動不能": state['banned']['P2'].append(c2)
-        if c2 == '封印' and c1 != "行動不能": state['banned']['P1'].append(c1)
-
-        # 勝敗ロジック (簡略化)
-        if c1 == "行動不能" and c2 == "行動不能": state['winner'] = '引き分け'
-        elif c1 == "行動不能": state['winner'] = 'P2'
-        elif c2 == "行動不能": state['winner'] = 'P1'
-        # ... (以下、元の判定ロジックを簡略化したもの)
-        
-        state['choices'].update({'P1': None, 'P2': None})
-        if not state['winner']: state['turn'] += 1
-        st.rerun()
-
-# ⚔️ アクション選択
-if state['choices'][role] is None:
-    available = [a for a in actions if a not in state['banned'][role] and action_cost[a] <= state['power'][role]]
-    if not available: state['choices'][role] = "行動不能"; st.rerun()
-    cols = st.columns(len(available))
-    for i, act in enumerate(available):
-        if cols[i].button(act): state['choices'][role] = act; st.rerun()
-else:
-    st.warning("⏳ 相手を待機中...")
-    @st.fragment
-    def wait_for_opponent():
-        time.sleep(1); st.rerun()
-    wait_for_opponent()
-
-st.write("---"); st.subheader("📜 履歴"); st.write(state['log'])
-
+        # LocalStorageおよびセッションの戦績カウント・履歴処理
+        if state['turn'] != st.session_state.last_counted_turn:
+            u_data["matches"] += 1
+            if state['winner'] == role:
+                u_data["wins"] += 1
+                u_data["history"].insert(0, {"opp": opp_display_name, "result": "勝ち"})
+            elif state['winner'] == opp_role:
+                u_data["losses"] += 1
+                u_data["history"].insert(0, {"opp": opp_display_name, "result": "負け"})
+            else:
+                u_data["history"].insert(0, {"opp": opp_display_name, "result": "引き分け"})
+                
+            st.session_state.user_data = u_data
+            save_local_storage(u_data) # ブラウザに保存
+            st.session_state.last_counted_turn = state['turn']
+            st.rerun()
+            
+        if st.button("🔄 もう一度遊ぶ（同じ部屋でリセット）"):
+            state['power'] = {'Player 1': 0, 'Player 2': 0}
+            state['banned'] = {'Player 1': [], 'Player 2': []}
+            state['choices'] = {'Player 1': None, 'Player 2': None}
+            state['last_choices'] = {'Player 1': "まだ行動していません", 'Player 2': "まだ行動していません"}
+            state['log'] = ["ゲームがリセットされました。"]
+            state['turn'] = 1
+            state['winner'] = None
