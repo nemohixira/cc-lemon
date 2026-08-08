@@ -3,17 +3,16 @@ import time
 import random
 from datetime import datetime
 
-# 1. ページの初期設定
-st.set_page_config(page_title="CCレモンゲーム 決定版", layout="centered")
+# 1. ページの初期設定（サイト名から「決定版」などを削除）
+st.set_page_config(page_title="CCレモンゲーム", layout="centered")
 
 # --- 全ユーザーでデータを共有するための仕組み（メモリ保持） ---
 @st.cache_resource
 def get_global_data():
     return {
         'rooms': {},         # 部屋データ
-        'users': {},         # 登録ユーザー: {ニックネーム: {"password": pwd, "wins": 0, "losses": 0, "matches": 0, "history": [], "crowns": {"gold": 0, "silver": 0, "bronze": 0}}}
-        'reports': [],       # 問い合わせ内容保存用 (管理者用)
-        'ranking_updated': None # ランキング最終更新日時記録用
+        'users': {},         # 登録ユーザーデータ
+        'reports': []        # 問い合わせ内容保存用 (管理者用)
     }
 
 global_data = get_global_data()
@@ -24,29 +23,43 @@ global_reports = global_data['reports']
 # --- 管理者アカウントの初期作成（問い合わせ確認用） ---
 if "admin" not in global_users:
     global_users["admin"] = {
-        "password": "adminpassword123", # 必要に応じて変更してください
+        "password": "adminpassword123", # 運用に合わせて自由に変更してください
         "wins": 0, "losses": 0, "matches": 0, "history": [],
         "crowns": {"gold": 0, "silver": 0, "bronze": 0}
     }
 
-# 1週間ごとのランキング模擬更新（起動時 or アクセス時に簡易チェック）
-# 実際にはバックエンドサーバーがないため、直近のユーザー上位10名をリアルタイム集計し、
-# 1位〜3位に初めて入ったタイミング、または定期判定として王冠を付与するロジックをシミュレートします。
-def update_rankings_and_crowns():
+# 同率順位に対応した週間ランキング集計関数
+def get_ranked_players():
     if not global_users:
         return []
-    # adminを除外して勝利数でソート
+    # 管理者(admin)を除外して、プレイヤー名とデータを取得
     players = [(name, data) for name, data in global_users.items() if name != "admin"]
-    sorted_players = sorted(players, key=lambda x: x[1]['wins'], reverse=True)[:10]
+    # 勝利数の降順（多い順）でソート
+    sorted_players = sorted(players, key=lambda x: x[1]['wins'], reverse=True)
     
-    # 簡易的に、ここでの上位3名に王冠を授与するトリガー（重複付与を防ぐフラグ管理などが本来は必要ですが、ここでは現在の集計を表示）
-    return sorted_players
+    ranked_results = []
+    current_rank = 1
+    
+    for i, (name, data) in enumerate(sorted_players):
+        # 1位より後ろのプレイヤーで、前のプレイヤーと勝利数が同じなら同率順位にする
+        if i > 0 and data['wins'] == sorted_players[i-1][1]['wins']:
+            # 順位は更新せず、前と同じ順位を維持
+            pass
+        else:
+            # 勝利数が違っていれば、その時点の並び順（i + 1）を新しい順位とする
+            current_rank = i + 1
+            
+        # 上位10位までをランキング対象とする
+        if current_rank <= 10:
+            ranked_results.append((current_rank, name, data))
+            
+    return ranked_results
 
 # --- セッション状態の初期化 ---
 if "logged_in_user" not in st.session_state:
     st.session_state.logged_in_user = None
 
-# ゲームの基本データ定義
+# ゲームの基本アクションとコストの定義
 actions = ['溜め', '攻撃', 'ミラー', '封印', 'レーザー', 'バリア']
 action_cost = {'溜め': 0, '攻撃': 1, 'ミラー': 2, '封印': 3, 'レーザー': 5, 'バリア': 0}
 
@@ -55,17 +68,17 @@ action_cost = {'溜め': 0, '攻撃': 1, 'ミラー': 2, '封印': 3, 'レーザ
 # 🔑 認証フェーズ（未ログイン時）
 # ==========================================
 if st.session_state.logged_in_user is None:
-    st.title("🍋 CCレモンゲーム オンライン")
+    st.title("🍋 CCレモンゲーム")
     st.subheader("🚪 ゲームへの入り口")
     
     tab1, tab2 = st.tabs(["📝 新規登録", "🔑 ログイン"])
     
     with tab1:
         st.write("### アカウントを作成する")
-        st.caption("※ニックネームはランキングなどで全体に表示されます。")
+        st.caption("⚠️ ニックネームはランキングなどで全体に表示されます。ご注意ください。")
         reg_name = st.text_input("希望するニックネーム:", key="reg_name").strip()
         
-        # パスワード表示切り替えの仕組み
+        # パスワード可視化の切り替えチェックボックス
         show_reg_pwd = st.checkbox("パスワードを表示する", key="show_reg_pwd")
         reg_pwd = st.text_input("パスワード:", type="default" if show_reg_pwd else "password", key="reg_pwd")
         
@@ -73,23 +86,20 @@ if st.session_state.logged_in_user is None:
             if not reg_name or not reg_pwd:
                 st.error("ニックネームとパスワードを両方入力してください。")
             elif reg_name in global_users:
-                st.error("このニックネームはすでに使用されています。")
-                # ニックネームの入力をクリアするためにリラン
+                st.error("このニックネームは使用されています")
+                # 重複があった場合は入力欄をクリアするために状態をリセット
                 st.session_state.reg_name = ""
                 st.rerun()
             else:
-                # ユーザーデータの初期化
+                # ユーザーデータの初期構造を作成
                 global_users[reg_name] = {
                     "password": reg_pwd,
-                    "wins": 0,
-                    "losses": 0,
-                    "matches": 0,
+                    "wins": 0, "losses": 0, "matches": 0,
                     "history": [],
                     "crowns": {"gold": 0, "silver": 0, "bronze": 0}
                 }
                 st.session_state.logged_in_user = reg_name
-                st.success("登録が完了しました！")
-                st.hierarchy = "user"
+                st.success("ユーザー登録が完了しました！")
                 time.sleep(1)
                 st.rerun()
                 
@@ -107,24 +117,22 @@ if st.session_state.logged_in_user is None:
                 time.sleep(1)
                 st.rerun()
             else:
-                st.error("このニックネームとパスワードの組み合わせはありません。")
+                st.error("このニックネームとパスワードの組み合わせはありません")
+                # 認証失敗時は入力欄の文字を強制消去
                 st.session_state.login_name = ""
                 st.session_state.login_pwd = ""
                 st.rerun()
                 
-    st.stop() # ログインしていない場合はここで処理を完全にストップ（ロビーやゲームを100%隠す）
-
-
+    st.stop() # 未ログイン時はここで完全に処理を停止（ロビーやゲーム画面を100%隠蔽）
 # ==========================================
 # 📱 ログイン後：共通ナビゲーション
 # ==========================================
 my_name = st.session_state.logged_in_user
 u_data = global_users[my_name]
 
-# サイドバーメニュー
+# サイドバーメニューの構築
 st.sidebar.title(f"👤 {my_name}")
-# 王冠の簡易表示
-st.sidebar.markdown(f"👑 👑 👑  \n🥇 金: {u_data['crowns']['gold']} | 🥈 銀: {u_data['crowns']['silver']} | 🥉 銅: {u_data['crowns']['bronze']}")
+st.sidebar.markdown(f"👑 獲得王冠  \n🥇 金: {u_data['crowns']['gold']} | 🥈 銀: {u_data['crowns']['silver']} | 🥉 銅: {u_data['crowns']['bronze']}")
 
 menu_options = ["🎮 ゲームロビー", "👤 マイページ", "🏆 週間ランキング", "📩 お問い合わせ"]
 if my_name == "admin":
@@ -132,7 +140,7 @@ if my_name == "admin":
 
 page = st.sidebar.radio("メニュー移動", menu_options)
 
-# ログアウトボタン
+# ログアウト処理
 if st.sidebar.button("🚪 ログアウト"):
     st.session_state.logged_in_user = None
     st.session_state.pop('my_room', None)
@@ -147,10 +155,10 @@ if page == "🎮 ゲームロビー":
     
     # --- 部屋の選択・作成フェーズ（ロビー） ---
     if "my_room" not in st.session_state:
-        st.title("🍋 CCレモンゲーム オンライン対戦")
+        st.title("🍋 CCレモンゲーム")
         st.subheader("🚪 対戦ロビー")
         
-        # 入室可能な部屋（プレイヤー2がまだいなくて、解散されていない部屋）
+        # 3人目が入るのを防ぐため、Player 2が未参加の空き部屋だけを一覧に抽出
         active_rooms = {k: v for k, v in global_rooms.items() if not v['players']['Player 2']}
         room_list = list(active_rooms.keys())
         
@@ -163,7 +171,7 @@ if page == "🎮 ゲームロビー":
             show_room_pwd = st.checkbox("部屋にパスワードを設定する")
             room_pwd = ""
             if show_room_pwd:
-                room_pwd = st.text_input("部屋のパスワード:", type="password", help="パスワードを知っている人しか部屋に入れなくなります")
+                room_pwd = st.text_input("部屋のパスワード:", type="password")
                 st.caption("⚠️ パスワードを設定すると、パスワードを知っている人しか部屋に入れなくなります。")
                 
             if st.button("部屋を作成して入る") and new_room_name:
@@ -191,9 +199,9 @@ if page == "🎮 ゲームロビー":
         with col2:
             st.write("### 部屋一覧から入る")
             
-            # ランダム入室ボタン
+            # 🔀 ランダム入室機能
             if st.button("🔀 ランダムで部屋に入る"):
-                # パスワードがかかっていない、かつ空いている部屋を探す
+                # パスワードが設定されておらず、かつ空いている部屋をフィルタリング
                 open_rooms = [k for k, v in active_rooms.items() if v['password'] is None or v['password'] == ""]
                 if open_rooms:
                     chosen_room = random.choice(open_rooms)
@@ -220,7 +228,6 @@ if page == "🎮 ゲームロビー":
                 selected_room = st.selectbox("部屋を選択:", room_list)
                 room = global_rooms[selected_room]
                 
-                # パスワードが設定されている場合の入力欄
                 input_room_pwd = ""
                 if room['password']:
                     input_room_pwd = st.text_input("🔑 鍵付きの部屋です。パスワードを入力:", type="password", key=f"pwd_{selected_room}")
@@ -239,7 +246,7 @@ if page == "🎮 ゲームロビー":
                         st.session_state.last_counted_turn = 0
                         st.rerun()
                         
-        # 🌟ロビー画面の時は、ここでプログラムを絶対にストップさせる（バトル画面やチャットの重複漏れを100%防ぐ）
+        # ロビー画面表示時は、下のバトルフィールドが絶対に見えないようここで処理をストップ
         st.stop() 
 
 
@@ -248,7 +255,7 @@ if page == "🎮 ゲームロビー":
     role = st.session_state.my_role
     opp_role = 'Player 2' if role == 'Player 1' else 'Player 1'
 
-    # 部屋が削除されていた、またはPlayer1退出による強制退去処理
+    # Player 1が部屋を出た瞬間に即時削除され、Player 2が自動的に退出させられる処理
     if room_name not in global_rooms:
         st.warning("⚠️ 部屋が解散されました。ロビーに戻ります...")
         st.session_state.pop('my_room', None)
@@ -258,7 +265,7 @@ if page == "🎮 ゲームロビー":
 
     state = global_rooms[room_name]
     
-    # 自分がPlayer 2のとき、Player 1によってキック（退出）させられていないかチェック
+    # キック（退出）させられていないか確認
     if role == 'Player 2' and not state['players']['Player 2']:
         st.error("❌ 部屋主（Player 1）によって退出させられました。")
         st.session_state.pop('my_room', None)
@@ -269,18 +276,16 @@ if page == "🎮 ゲームロビー":
     my_display_name = state['names'][role]
     opp_display_name = state['names'][opp_role] if state['names'][opp_role] else "（待機中...）"
 
-    # 🚪 部屋を退室する処理
     st.success(f"部屋「{room_name}」に参加中")
     
     col_leave, col_kick = st.columns(2)
     with col_leave:
         if st.button("🚪 部屋を出る（ロビーへ戻る）"):
             if role == 'Player 1':
-                # Player 1が出たら部屋ごと即削除（Player 2も自動で追い出される）
+                # Player 1が退出した瞬間、部屋一覧(global_rooms)から即座に削除
                 if room_name in global_rooms: 
                     del global_rooms[room_name]
             else:
-                # Player 2が出る場合
                 state['players']['Player 2'] = False
                 state['names']['Player 2'] = None
                 state['choices']['Player 2'] = None
@@ -290,7 +295,7 @@ if page == "🎮 ゲームロビー":
             st.session_state.pop('my_role', None)
             st.rerun()
 
-    # Player 1限定：Player 2をキック（退出）させるボタン
+    # Player 1専用：Player 2キック機能
     with col_kick:
         if role == 'Player 1' and state['players']['Player 2']:
             if st.button("💥 相手プレイヤーを退室させる"):
@@ -302,7 +307,7 @@ if page == "🎮 ゲームロビー":
 
     st.divider()
 
-    # ⚔️ バトルフィールド
+    # ⚔️ バトルフィールド表示
     st.subheader(f"⚔️ バトルフィールド (ターン {state['turn']})")
     col_me, col_opp = st.columns(2)
     with col_me:
@@ -321,14 +326,14 @@ if page == "🎮 ゲームロビー":
 
     st.divider()
 
-    # 💬 リアルタイムチャットエリア
+    # ✨ 改善点：部屋内チャットを「次の手を選んでください」の上に配置換え
     st.subheader("💬 部屋内チャット")
     chat_box = st.container(height=180, border=True)
     with chat_box:
         for msg in state['chat']:
             st.write(msg)
             
-    # チャット送信フォーム (Enterキー送信対応、送信後クリア)
+    # チャット送信（Enterキー送信対応・入力欄自動クリア）
     with st.form(key="chat_form", clear_on_submit=True):
         chat_input = st.text_input("メッセージを入力:", placeholder="対戦よろしくお願いします！ (Enterで送信)")
         submit_chat = st.form_submit_button("送信")
@@ -338,7 +343,6 @@ if page == "🎮 ゲームロビー":
             st.rerun()
 
     st.divider()
-
     # 🏆 決着判定フェーズ
     if state['winner']:
         if state['winner'] == '引き分け':
@@ -375,7 +379,7 @@ if page == "🎮 ゲームロビー":
             st.rerun()
         st.stop()
 
-    # ⚔️ アクションコマンド入力
+    # ✨ 改善点：チャットの下にアクションコマンド入力を配置
     if state['choices'][role] is None:
         if not state['names'][opp_role]:
             st.warning("⏳ 対戦相手が参加するまで行動を選択できません。")
@@ -400,13 +404,14 @@ if page == "🎮 ゲームロビー":
         st.info(f"あなたは「{state['choices'][role]}」を選択済みです。")
         st.warning("⏳ 相手の入力を待っています...（自動更新中）")
         
+        # ✨ 改善点：両者の入力状況を毎秒監視し、揃ったら即座にリランして判定を進める構造
         @st.fragment
         def wait_for_opponent():
-            time.sleep(2)
+            time.sleep(1)
             st.rerun()
         wait_for_opponent()
 
-    # ⚖️ 両者が揃ったらジャッジ
+    # ⚖️ 両者が揃ったら即時ジャッジ（常に更新され、スムーズに進行します）
     if state['choices']['Player 1'] and state['choices']['Player 2']:
         action1 = state['choices']['Player 1']
         action2 = state['choices']['Player 2']
@@ -458,7 +463,7 @@ if page == "🎮 ゲームロビー":
 
     # 📜 履歴の表示
     st.divider()
-    st.subheader("📜 対戦履歴")
+    st.subheader("📜 对戦履歴")
     for log in state['log']: 
         st.write(log)
 
@@ -470,7 +475,7 @@ elif page == "👤 マイページ":
     st.title("👤 マイページ")
     
     st.subheader("ユーザープロフィール")
-    col_name, col_btn = st.columns([3, 1])
+    col_name, col_btn = st.columns()
     with col_name:
         new_nick = st.text_input("ニックネーム変更:", value=my_name)
     with col_btn:
@@ -528,24 +533,28 @@ elif page == "🏆 週間ランキング":
     
     if my_name == "admin":
         if st.button("⚙️ [管理者] 現在の上位3名に今週の王冠を確定付与する"):
-            top_3 = [name for name, _ in sorted(global_users.items(), key=lambda x: x['wins'], reverse=True) if name != "admin"][:3]
-            if len(top_3) >= 1: global_users[top_3[0]]["crowns"]["gold"] += 1
-            if len(top_3) >= 2: global_users[top_3[1]]["crowns"]["silver"] += 1
-            if len(top_3) >= 3: global_users[top_3[2]]["crowns"]["bronze"] += 1
-            st.success("上位者に王冠を付与しました！")
+            ranked_list = get_ranked_players()
+            # 同率の有無にかかわらず、リストの順位(rank)をベースに上位者へ王冠を付与
+            for rank, p_name, _ in ranked_list:
+                if rank == 1: global_users[p_name]["crowns"]["gold"] += 1
+                elif rank == 2: global_users[p_name]["crowns"]["silver"] += 1
+                elif rank == 3: global_users[p_name]["crowns"]["bronze"] += 1
+            st.success("同率順位を考慮し、上位者に王冠を付与しました！")
             time.sleep(1)
             st.rerun()
 
-    ranked_list = update_rankings_and_crowns()
+    # ✨ 改善点：同率順位を適用したプレイヤーリストを取得
+    ranked_list = get_ranked_players()
     
     if not ranked_list:
         st.info("現在データがありません。")
     else:
-        for rank, (p_name, p_info) in enumerate(ranked_list, 1):
+        for rank, p_name, p_info in ranked_list:
+            # 1〜3位には特別な王冠やメダルを装飾
             rank_icon = "👑 " if rank <= 3 else "👤 "
-            if rank == 1: rank_label = "🥇 1位"
-            elif rank == 2: rank_label = "🥈 2位"
-            elif rank == 3: rank_label = "🥉 3位"
+            if rank == 1: rank_label = "🥇 1位 (同率含む)"
+            elif rank == 2: rank_label = "🥈 2位 (同率含む)"
+            elif rank == 3: rank_label = "🥉 3位 (同率含む)"
             else: rank_label = f"{rank}位"
             
             st.markdown(f"### {rank_label} : {rank_icon}{p_name}")
@@ -573,12 +582,13 @@ elif page == "📩 お問い合わせ":
             if not rep_detail.strip():
                 st.error("詳細が入力されていません。")
             else:
+                # あなただけが見られる内製データ管理領域へ格納
                 global_reports.append({
                     "time": datetime.now().strftime('%Y-%m-%d %H:%M'),
                     "user": my_name,
                     "category": rep_category,
                     "detail": rep_detail.strip()
-                })
+})
                 st.success("📩 お問い合わせ内容を送信しました。ありがとうございました！")
 
 
